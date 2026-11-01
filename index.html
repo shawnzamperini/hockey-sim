@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hockey Sim</title>
+  <meta name="description" content="NHL games of the day with on-device Monte Carlo game simulation.">
+
+  <!-- Installable as a home-screen app on iPhone -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Hockey Sim">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <meta name="theme-color" content="#EEF3F6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0D1723" media="(prefers-color-scheme: dark)">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <section id="view-games" class="view">
+    <header class="top">
+      <h1 id="day-title" class="day-title">Games</h1>
+      <p id="day-sub" class="day-sub"></p>
+      <div class="center-line" aria-hidden="true"></div>
+      <nav id="day-strip" class="day-strip" aria-label="Choose a day"></nav>
+    </header>
+
+    <main id="content" class="content" aria-live="polite">
+      <p class="status-msg">Loading schedule…</p>
+    </main>
+
+    <footer class="foot">
+      <p id="updated" class="updated"></p>
+    </footer>
+  </section>
+
+  <section id="view-scorecard" class="view" hidden>
+    <header class="top">
+      <h1 class="day-title">Scorecard</h1>
+      <p class="day-sub">How well the model's pre-game odds hold up</p>
+      <div class="center-line" aria-hidden="true"></div>
+    </header>
+    <div id="scorecard" class="content scorecard">
+      <p class="status-msg">Loading results…</p>
+    </div>
+  </section>
+
+  <section id="view-bets" class="view" hidden>
+    <header class="top">
+      <h1 class="day-title">Bets</h1>
+      <p class="day-sub">Your tracked bets and how they're going</p>
+      <div class="center-line" aria-hidden="true"></div>
+    </header>
+    <div id="bets" class="content bets-view">
+      <p class="status-msg">Loading…</p>
+    </div>
+  </section>
+
+  <nav class="tabbar" aria-label="Sections">
+    <button type="button" data-view="games" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M3.5 9.5h17M8 3v3M16 3v3"/></svg>
+      <span>Games</span>
+    </button>
+    <button type="button" data-view="scorecard">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M21 20.5H3"/></svg>
+      <span>Scorecard</span>
+    </button>
+    <button type="button" data-view="bets">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="2.5"/><path d="M8 8.5h8M8 12.5h8M8 16.5h5"/></svg>
+      <span>Bets</span>
+    </button>
+  </nav>
+
+  <dialog id="sheet" class="sheet" aria-labelledby="sheet-title">
+    <div class="sheet-inner">
+      <div class="grabber" aria-hidden="true"></div>
+      <button class="sheet-close" type="button" aria-label="Close">Done</button>
+      <div id="sheet-body"></div>
+    </div>
+  </dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

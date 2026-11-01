@@ -1,0 +1,16 @@
+{
+  "name": "Hockey Sim",
+  "short_name": "Hockey Sim",
+  "description": "NHL games of the day with on-device Monte Carlo game simulation.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EEF3F6",
+  "theme_color": "#EEF3F6",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
