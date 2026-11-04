@@ -649,6 +649,8 @@ body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
 /* ------------------------------------------------------------- goalies */
 
 .goalies { margin-top: 6px; }
+.starter-reports { padding-left: 18px; margin: 0 0 8px; }
+.starter-reports li { margin: 2px 0; }
 .goalie-pick {
   display: grid;
   grid-template-columns: 44px 1fr;

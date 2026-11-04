@@ -292,19 +292,37 @@ function goalieSectionHTML(g, d) {
       if (x.starts) bits.push(`${signed(x.gsax || 0)} GSAx`);
       return `<option value="${esc(x.id)}" ${picks[side] === String(x.id) ? "selected" : ""}>${esc(x.name)} (${bits.join(", ")})</option>`;
     }).join("");
+    // A reported starter (Confirmed / Likely) sets the default; otherwise the projection.
+    const rep = d.sides[side].starter;
+    const repOn = rep && rep.p > 0;
+    const defaultText = repOn
+      ? `${rep.status}: ${rep.name}${rep.p < 1 ? ` (${Math.round(100 * rep.p)}%)` : ""}`
+      : `Projected: ${projText}`;
     return `<label class="goalie-pick">
         <span class="goalie-team">${esc(g[side].abbrev)}</span>
         <select data-goalie-side="${side}" aria-label="${esc(`${g[side].short} starting goalie`)}">
-          <option value="" ${picks[side] ? "" : "selected"}>Projected: ${esc(projText)}</option>
+          <option value="" ${picks[side] ? "" : "selected"}>${esc(defaultText)}</option>
           ${options}
         </select>
       </label>`;
   }).join("");
   if (!rows) return "";
+  const reports = ["away", "home"].map((side) => {
+    const r = d.sides[side].starter;
+    if (!r) return "";
+    const bits = [`${esc(g[side].abbrev)}: ${esc(r.name)}, ${esc(r.status || "no status yet")}`];
+    if (r.source) bits.push(`via ${esc(r.source)}`);
+    if (r.at) bits.push(fmtTime(r.at));
+    if (r.p > 0 && !r.known) bits.push("no record with this team, rated as a replacement-level goalie");
+    return `<li>${bits.join(", ")}</li>`;
+  }).join("");
   return `<section class="goalies">
       <h3 class="res-heading">Starting goalies</h3>
-      <p class="explain">Projected from recent starts; each simulated game draws its starter with these odds.
+      <p class="explain">Confirmed starters are locked in and likely ones get 90% of the starts; otherwise
+        the starter is projected from recent starts, and each simulated game draws its starter with these odds.
         Pick a goalie to lock him in. GSAx is goals saved above expected this season.</p>
+      ${reports ? `<ul class="explain starter-reports">${reports}</ul>
+      <p class="explain">Reported starters from <a href="https://www.dailyfaceoff.com/starting-goalies/" target="_blank" rel="noopener">Daily Faceoff</a>, checked every 10 minutes.</p>` : ""}
       ${rows}
     </section>`;
 }
@@ -601,9 +619,11 @@ function goalieSummary(g, inputs) {
   const line = (side) => {
     const opts = inputs[side].goalieOptions || [];
     if (!opts.length) return "";
+    const tag = (o) => (o.reported ? ` <span class="tag">${esc(String(o.reported).toLowerCase())}</span>` : "");
     const text = opts[0].picked
       ? `${esc(opts[0].name)} <span class="tag">your pick</span>`
-      : opts.filter((o) => o.p >= 0.05).map((o) => `${esc(o.name)} ${Math.round(100 * o.p)}%`).join(", ");
+      : opts.length === 1 ? `${esc(opts[0].name)}${tag(opts[0])}`
+      : opts.filter((o) => o.p >= 0.05).map((o) => `${esc(o.name)} ${Math.round(100 * o.p)}%${tag(o)}`).join(", ");
     return `<div><dt>${esc(g[side].abbrev)} in goal</dt><dd class="goalie-dd">${text}</dd></div>`;
   };
   const rows = line("away") + line("home");
