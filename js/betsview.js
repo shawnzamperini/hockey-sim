@@ -1,19 +1,28 @@
 // Bets tab: sign in, then your tracked bets and how they're going.
 
 import * as account from "./account.js";
-import { betStats, describeBet } from "./bets.js";
+import { betStats, describeBet, toUnits } from "./bets.js";
+import { SIZING_DEFAULTS, unitsText } from "./lines.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[c]);
 
-const ui = { el: null, user: undefined, bets: null, email: "", msg: "", note: "", busy: false, changingPw: false };
+const ui = { el: null, user: undefined, bets: null, email: "", msg: "", note: "", busy: false, changingPw: false,
+  sizing: account.cachedSizing(), sizingNote: "", sizingOpen: false };
 
 const money = (x, sign = true) => {
   const v = Math.abs(Number(x) || 0);
   const s = v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2).replace(/\.00$/, "");
   return `${sign ? (x > 0 ? "+" : x < 0 ? "−" : "") : ""}$${s}`;
 };
+/** Units with sign: "+1.3u". */
+const units = (x, sign = true) => {
+  const v = Math.abs(Number(x) || 0);
+  const t = v >= 100 ? Math.round(v).toString() : v.toFixed(v >= 10 ? 1 : 2).replace(/\.?0+$/, "") || "0";
+  return `${sign ? (x > 0.0049 ? "+" : x < -0.0049 ? "−" : "") : ""}${t}u`;
+};
+const unitOf = (b) => (Number(b.unit_size) > 0 ? Number(b.unit_size) : ui.sizing.unitSize);
 const oddsText = (o) => (o > 0 ? `+${o}` : `−${Math.abs(o)}`);
 const pctText = (x, d = 1) => `${x >= 0 ? "+" : "−"}${Math.abs(100 * x).toFixed(d)}%`;
 const day = (iso) => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
@@ -51,7 +60,7 @@ function tile(label, value, note, cls = "") {
 }
 
 /** Cumulative profit vs what the model expected, with a +/- 2 sd band. */
-function chartHTML(series) {
+function chartHTML(series, fmt = units) {
   if (series.length < 2) return "";
   const W = 340, H = 190, L = 44, R = 10, T = 12, B = 26;
   const pts = [{ profit: 0, expected: 0, lo: 0, hi: 0 }, ...series];
@@ -65,9 +74,9 @@ function chartHTML(series) {
     + `${[...pts].reverse().map((p, j) => `L${x(pts.length - 1 - j).toFixed(1)},${y(p.lo).toFixed(1)}`).join("")}Z`;
   const ticks = [lo, 0, hi].filter((v, i, a) => a.indexOf(v) === i);
   return `<svg class="chart bets-chart" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="Cumulative profit ${esc(money(series.at(-1).profit))}, expected ${esc(money(series.at(-1).expected))}">
+      aria-label="Cumulative profit ${esc(fmt(series.at(-1).profit))}, expected ${esc(fmt(series.at(-1).expected))}">
       ${ticks.map((v) => `<line class="grid${v === 0 ? " zero" : ""}" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>
-        <text class="tick" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${esc(money(v))}</text>`).join("")}
+        <text class="tick" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${esc(fmt(v))}</text>`).join("")}
       <path class="band" d="${band}"/>
       <path class="expected" d="${path("expected")}"/>
       <path class="actual" d="${path("profit")}"/>
@@ -83,12 +92,14 @@ function betRow(b) {
   const model = Number.isFinite(Number(b.ev)) ? `model ${pctText(Number(b.ev))}` : "";
   let right;
   if (b.status === "open") {
-    right = `<span class="bet-stake">${money(b.stake, false)}</span>
+    right = `<span class="bet-stake">${units(b.stake / unitOf(b), false)}</span>
+      <small>${money(b.stake, false)}</small>
       <button type="button" class="link-btn" data-act="delete" data-id="${esc(b.id)}">Remove</button>`;
   } else {
     const label = { won: "Won", lost: "Lost", push: "Push", void: "Void" }[b.status];
     const score = b.final_home != null ? `${b.final_away}–${b.final_home}${b.ended_in && b.ended_in !== "REG" ? ` ${b.ended_in}` : ""}` : "";
-    right = `<span class="bet-profit ${b.status}">${b.status === "void" ? "$0" : money(b.profit)}</span><small>${label}${score ? ` · ${esc(score)}` : ""}</small>`;
+    right = `<span class="bet-profit ${b.status}">${b.status === "void" ? "0u" : units(b.profit / unitOf(b))}</span>
+      <small>${label}${score ? ` · ${esc(score)}` : ""} · ${b.status === "void" ? "$0" : money(b.profit)}</small>`;
   }
   return `<li class="bet">
       <span class="bet-main">${esc(describeBet(b))} <span class="bet-odds">${oddsText(b.odds_american)}</span>
@@ -97,9 +108,39 @@ function betRow(b) {
     </li>`;
 }
 
+const KELLY_CHOICES = [[0.125, "⅛ Kelly"], [0.25, "¼ Kelly (recommended)"], [0.5, "½ Kelly"], [1, "Full Kelly"]];
+const WEIGHT_CHOICES = [[0, "0% (market only: no bets)"], [0.25, "25%"], [0.5, "50% (recommended until tested)"], [0.75, "75%"], [1, "100% (model only)"]];
+const kellyName = (k) => (KELLY_CHOICES.find(([v]) => v === k)?.[1] || `${k}× Kelly`).replace(/ \(.*\)/, "");
+
+function sizingHTML() {
+  const z = ui.sizing;
+  const opt = (choices, cur) => choices.map(([v, t]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
+  return `<details class="sizing" ${ui.sizingOpen ? "open" : ""}>
+      <summary><span class="sizing-title">Bet sizing</span>
+        <span class="sizing-sum">1u = ${money(z.unitSize, false)} · ${esc(kellyName(z.kellyFraction))} · model ${Math.round(100 * z.modelWeight)}%</span></summary>
+      <form class="sizing-form" data-form="sizing">
+        <p class="explain">Suggested stakes, in units, appear under each line's value in the sportsbook comparison. They use
+          the Kelly criterion: bet your edge divided by the odds, as a share of your bankroll, which grows a bankroll
+          fastest in the long run. Betting a fraction of Kelly gives up a little growth for much smaller swings, and
+          protects against the model overstating its edges.</p>
+        <label>Unit size ($) <input name="unitSize" type="text" inputmode="decimal" value="${esc(z.unitSize)}"></label>
+        <label>Bankroll (units) <input name="bankrollUnits" type="text" inputmode="decimal" value="${esc(z.bankrollUnits)}">
+          <small>100 means one unit is 1% of your bankroll, the usual convention.</small></label>
+        <label>Kelly fraction <select name="kellyFraction">${opt(KELLY_CHOICES, z.kellyFraction)}</select></label>
+        <label>Trust in the model <select name="modelWeight">${opt(WEIGHT_CHOICES, z.modelWeight)}</select>
+          <small>Each chance is blended with the market's (from the prices you enter) before sizing. Until the model is
+            benchmarked against past odds, half and half is a sensible hedge.</small></label>
+        <label>Most per bet (units) <input name="maxUnits" type="text" inputmode="decimal" value="${esc(z.maxUnits)}"></label>
+        <button type="submit" ${ui.busy ? "disabled" : ""}>Save</button>
+        ${ui.sizingNote ? `<p class="form-note" role="status">${esc(ui.sizingNote)}</p>` : ""}
+      </form>
+    </details>`;
+}
+
 function dashboardHTML() {
   const bets = ui.bets || [];
-  const s = betStats(bets);
+  const s = betStats(toUnits(bets, ui.sizing.unitSize));
+  const dollars = betStats(bets);
   const open = bets.filter((b) => b.status === "open").sort((a, b) => a.start_time.localeCompare(b.start_time));
   const done = bets.filter((b) => b.status !== "open");
   const settled = s.won + s.lost + s.push;
@@ -108,7 +149,8 @@ function dashboardHTML() {
       <button type="button" class="link-btn" data-act="signout">Sign out</button></p>
     ${ui.changingPw ? passwordFormHTML() : ""}
     ${ui.note ? `<p class="form-note" role="status">${esc(ui.note)}</p>` : ""}
-    ${ui.msg ? `<p class="form-msg" role="alert">${esc(ui.msg)}</p>` : ""}`;
+    ${ui.msg ? `<p class="form-msg" role="alert">${esc(ui.msg)}</p>` : ""}
+    ${sizingHTML()}`;
   if (!bets.length) {
     return `${head}<p class="empty">No bets yet. Run a simulation, type the sportsbook's price next to a line,
       and tap <strong>+</strong> to track it.</p>`;
@@ -119,10 +161,10 @@ function dashboardHTML() {
     : luck > 0 ? "better than luck alone usually gives" : "worse than luck alone usually gives";
   return `${head}
     <div class="tiles">
-      ${tile("Record", `${s.won}–${s.lost}${s.push ? `–${s.push}` : ""}`, `won–lost${s.push ? "–push" : ""}${s.open ? `; ${s.open} open (${money(s.openStake, false)})` : ""}`)}
-      ${tile("Profit", money(s.profit), `on ${money(s.staked, false)} staked`, s.profit > 0 ? "pos" : s.profit < 0 ? "neg" : "")}
-      ${tile("Return", s.roi === null ? "–" : pctText(s.roi), "profit per dollar staked")}
-      ${tile("Model expected", money(s.expected), settled ? `± ${money(2 * s.sd, false)} from luck; you're ${verdict}` : "")}
+      ${tile("Record", `${s.won}–${s.lost}${s.push ? `–${s.push}` : ""}`, `won–lost${s.push ? "–push" : ""}${s.open ? `; ${s.open} open (${units(s.openStake, false)})` : ""}`)}
+      ${tile("Profit", units(s.profit), `${money(dollars.profit)} · on ${units(s.staked, false)} staked`, s.profit > 0 ? "pos" : s.profit < 0 ? "neg" : "")}
+      ${tile("Return", s.roi === null ? "–" : pctText(s.roi), "profit per unit staked")}
+      ${tile("Model expected", units(s.expected), settled ? `± ${units(2 * s.sd, false)} from luck; you're ${verdict}` : "")}
     </div>
     ${settled >= 2 ? `<h3 class="res-heading">Profit over time</h3>${chartHTML(s.series)}` : ""}
     <p class="explain">"Model expected" adds up each settled bet's expected value at the price you took. If the model's
@@ -145,7 +187,10 @@ function render() {
 async function refresh() {
   try {
     ui.user = await account.currentUser();
-    if (ui.user) ui.bets = await account.listBets();
+    if (ui.user) {
+      ui.sizing = await account.loadSizing().catch(() => ui.sizing);
+      ui.bets = await account.listBets();
+    }
   } catch (err) {
     ui.msg = err.message;
     ui.bets ??= [];
@@ -155,6 +200,7 @@ async function refresh() {
 
 export function initBets(el) {
   ui.el = el;
+  el.addEventListener("toggle", (e) => { if (e.target.matches?.(".sizing")) ui.sizingOpen = e.target.open; }, true);
   el.addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -168,6 +214,24 @@ export function initBets(el) {
         window.dispatchEvent(new CustomEvent("hockeysim:auth"));
         ui.busy = false;
         await refresh();
+        return;
+      }
+      if (form.dataset.form === "sizing") {
+        const num = (k, lo, hi) => {
+          const v = Number(String(form[k].value).replace(/[$,\s]/g, ""));
+          if (!(v >= lo && v <= hi)) throw new Error(`Check the ${form[k].closest("label").firstChild.textContent.trim().toLowerCase()}.`);
+          return v;
+        };
+        const next = { unitSize: num("unitSize", 0.01, 100000), bankrollUnits: num("bankrollUnits", 1, 100000),
+          kellyFraction: Number(form.kellyFraction.value), modelWeight: Number(form.modelWeight.value),
+          maxUnits: num("maxUnits", 0.1, 100) };
+        ui.sizing = next;
+        ui.sizingOpen = true;
+        ui.sizingNote = "";
+        try { await account.saveSizing(next); ui.sizingNote = "Saved."; }
+        catch (err) { ui.sizingNote = err.message; }
+        ui.busy = false;
+        render();
         return;
       }
       if (form.dataset.form === "newpw") {

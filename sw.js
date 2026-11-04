@@ -5,7 +5,7 @@
 //    model requests are POSTs to the model API and never cached.
 //  - Team logos and fonts: cache-first once seen.
 
-const VERSION = "v20";
+const VERSION = "v21";
 const SHELL_CACHE = `shell-${VERSION}`;
 const RUNTIME_CACHE = "runtime";
 

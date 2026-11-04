@@ -1,7 +1,8 @@
 import { teamColor } from "./teams.js";
 import { renderScorecard } from "./scorecard.js";
 import { buildSchedule, gameContext } from "./sim/schedule.js";
-import { parseOdds, expectedValue, fairOdds, totalLine, spreadLine, defaultTotal, americanOdds } from "./lines.js";
+import { parseOdds, expectedValue, fairOdds, totalLine, spreadLine, defaultTotal, americanOdds,
+  suggestStake, unitsText } from "./lines.js";
 import * as account from "./account.js";
 import { DATA_URL as DATA_BASE } from "./config.js";
 import { initBets, showBets, noteNewBet } from "./betsview.js";
@@ -695,18 +696,36 @@ const lineNum = (x) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
 const signedLine = (x) => `${x > 0 ? "+" : "−"}${lineNum(Math.abs(x))}`;
 
 /** Expected value of a bet at the typed price: { text, cls }. */
-function evCell(pWin, pLose, text) {
+/** The other side of a line: moneyline home/away, -1.5 vs the other team's +1.5, over/under. */
+function otherKey(key) {
+  let m;
+  if ((m = key.match(/^ml-(home|away)$/))) return `ml-${m[1] === "home" ? "away" : "home"}`;
+  if ((m = key.match(/^pl-(home|away)(-?[\d.]+)$/))) return `pl-${m[1] === "home" ? "away" : "home"}${-Number(m[2])}`;
+  if ((m = key.match(/^(over|under)@(.+)$/))) return `${m[1] === "over" ? "under" : "over"}@${m[2]}`;
+  return null;
+}
+
+/**
+ * Value and suggested stake for a row at the typed price: { text, cls, stake }.
+ * Value is the model's own expected profit per dollar; the stake (units, from
+ * the Bets tab's sizing settings) first blends the model with the market,
+ * using the other side's price if it's entered.
+ */
+function evCell(pWin, pLose, text, otherText = "") {
   const o = parseOdds(text);
-  if (!o) return { text: text ? "?" : "", cls: "" };
+  if (!o) return { text: text ? "?" : "", cls: "", stake: "" };
   const ev = expectedValue(pWin, pLose, o.profit);
   const mag = Math.abs(100 * ev);
-  return { text: `${ev >= 0 ? "+" : "−"}${mag.toFixed(mag >= 10 ? 0 : 1)}%`, cls: ev > 0 ? "pos" : "neg" };
+  const other = parseOdds(otherText);
+  const sug = suggestStake(pWin, pLose, o.profit, other?.profit ?? null, account.cachedSizing());
+  return { text: `${ev >= 0 ? "+" : "−"}${mag.toFixed(mag >= 10 ? 0 : 1)}%`, cls: ev > 0 ? "pos" : "neg",
+    stake: sug.units > 0 ? unitsText(sug.units) : ev > 0 ? "no bet" : "", units: sug.units };
 }
 
 function lineRow(gameId, key, label, pWin, pLose, book, spec) {
   const fair = fairOdds(pWin, pLose);
   const fairText = fair === null ? "–" : fair > 0 ? `+${fair}` : `−${Math.abs(fair)}`;
-  const ev = evCell(pWin, pLose, book[key] || "");
+  const ev = evCell(pWin, pLose, book[key] || "", book[otherKey(key)] || "");
   const push = 1 - pWin - pLose > 0.0005 ? `<small>push ${pct(1 - pWin - pLose)}</small>` : "";
   return `<div class="line-row${ev.cls === "pos" ? " has-value" : ""}" data-line="${esc(key)}" data-pwin="${pWin}" data-plose="${pLose}"
       data-market="${spec.market}" data-side="${spec.side}" data-lineval="${spec.line ?? ""}" data-fair="${fair ?? ""}">
@@ -715,7 +734,7 @@ function lineRow(gameId, key, label, pWin, pLose, book, spec) {
       <span class="line-fair">${fairText}</span>
       <input class="line-book" type="text" inputmode="text" enterkeyhint="done" autocomplete="off" spellcheck="false"
         placeholder="odds" value="${esc(book[key] || "")}" aria-label="${esc(`Sportsbook odds for ${label.replace(/<[^>]+>/g, "")}`)}">
-      <span class="line-ev ${ev.cls}">${ev.text}</span>
+      <span class="line-ev ${ev.cls}">${ev.text}<small class="line-stake">${ev.stake}</small></span>
       ${account.configured() ? `<button type="button" class="line-track" data-track aria-label="${esc(`Track a bet on ${label.replace(/<[^>]+>/g, "")}`)}">+</button>` : ""}
     </div>`;
 }
@@ -724,7 +743,7 @@ function linesHTML(g, r) {
   if (!r.totalDist || !r.marginDist) return "";
   const id = String(g.id), book = bookFor(id);
   const A = esc(g.away.abbrev), H = esc(g.home.abbrev);
-  const head = `<div class="line-row line-head"><span></span><span>Chance</span><span>Fair</span><span>Book</span><span>Value</span>${account.configured() ? "<span></span>" : ""}</div>`;
+  const head = `<div class="line-row line-head"><span></span><span>Chance</span><span>Fair</span><span>Book</span><span>Value<br>Stake</span>${account.configured() ? "<span></span>" : ""}</div>`;
   const ml = [["away", A], ["home", H]].map(([side, ab]) =>
     lineRow(id, `ml-${side}`, ab, r[side].win, 1 - r[side].win, book, { market: "moneyline", side })).join("");
   const pl = [["away", A], ["home", H]].flatMap(([side, ab]) => [-1.5, 1.5].map((h) => {
@@ -760,7 +779,6 @@ function linesHTML(g, r) {
 }
 
 // Tracking a bet: tap + on a row with a price, enter the stake, save.
-const lastStake = () => { try { return localStorage.getItem("lastStake") || "10"; } catch { return "10"; } };
 
 function closeTrackForms() {
   els.sheetBody.querySelectorAll(".track-form").forEach((f) => f.remove());
@@ -792,26 +810,48 @@ async function openTrackForm(row) {
     return;
   }
   form.dataset.key = row.dataset.line;
+  const sizing = await account.loadSizing().catch(() => account.cachedSizing());
+  const other = otherKey(row.dataset.line);
+  const partner = other && els.sheetBody.querySelector(`[data-line="${CSS.escape(other)}"]`);
+  const ev = evCell(Number(row.dataset.pwin), Number(row.dataset.plose), row.querySelector(".line-book").value.trim(),
+    partner ? partner.querySelector(".line-book").value.trim() : "");
+  const start = ev.units > 0 ? ev.units : lastUnits();
+  form.dataset.unit = sizing.unitSize;
   form.innerHTML = `<span class="track-what">${esc(label)} at ${odds.american > 0 ? "+" : "−"}${Math.abs(odds.american)}</span>
-      <label class="track-stake">Stake $<input name="stake" type="text" inputmode="decimal" value="${esc(lastStake())}" aria-label="Stake in dollars"></label>
+      <label class="track-stake">Units <input name="units" type="text" inputmode="decimal" value="${esc(start)}" aria-label="Stake in units"></label>
+      <span class="track-dollars">${esc(dollarsOf(start, sizing.unitSize))}</span>
       <button type="submit">Save bet</button>
+      <span class="track-hint">${ev.units > 0 ? `Suggested: ${esc(unitsText(ev.units))}` : "No stake suggested at this price"} ·
+        1u = ${esc(dollarsOf(1, sizing.unitSize))}</span>
       <span class="track-msg" role="status"></span>`;
 }
+
+const dollarsOf = (u, unit) => { const d = Number(u) * unit; return Number.isFinite(d) && d > 0 ? `$${Number(d.toFixed(2))}` : ""; };
+const lastUnits = () => { try { return localStorage.getItem("lastUnits") || "1"; } catch { return "1"; } };
+
+els.sheetBody.addEventListener("input", (e) => {
+  const input = e.target.closest('.track-form input[name="units"]');
+  if (!input) return;
+  const form = input.closest(".track-form");
+  form.querySelector(".track-dollars").textContent = dollarsOf(String(input.value).replace(/[u\s,]/gi, ""), Number(form.dataset.unit));
+});
 
 async function saveTrackForm(form) {
   const g = state.sheetGame;
   const row = els.sheetBody.querySelector(`[data-line="${CSS.escape(form.dataset.key)}"]`);
   const msg = form.querySelector(".track-msg");
   const odds = row && parseOdds(row.querySelector(".line-book").value);
-  const stake = Number(String(form.stake.value).replace(/[$,\s]/g, ""));
+  const units = Number(String(form.units.value).replace(/[u,\s]/gi, ""));
+  const unitSize = Number(form.dataset.unit);
   if (!odds) { msg.textContent = "Enter the price first."; return; }
-  if (!(stake > 0)) { msg.textContent = "Enter a stake."; return; }
+  if (!(units > 0)) { msg.textContent = "Enter a stake in units."; return; }
+  const stake = Number((units * unitSize).toFixed(2));
   const pWin = Number(row.dataset.pwin), pLose = Number(row.dataset.plose);
   const bet = {
     game_id: g.id, game_date: state.sheetDate, start_time: g.start, home: g.home.abbrev, away: g.away.abbrev,
     market: row.dataset.market, side: row.dataset.side,
     line: row.dataset.lineval === "" ? null : Number(row.dataset.lineval),
-    odds_american: odds.american, stake,
+    odds_american: odds.american, stake, unit_size: unitSize,
     model_win: Number(pWin.toFixed(4)), model_push: Number(Math.max(0, 1 - pWin - pLose).toFixed(4)),
     fair_odds: row.dataset.fair === "" ? null : Number(row.dataset.fair),
     ev: Number(expectedValue(pWin, pLose, odds.profit).toFixed(4)),
@@ -819,10 +859,17 @@ async function saveTrackForm(form) {
   form.querySelector("button").disabled = true;
   msg.textContent = "Saving…";
   try {
-    const saved = await account.addBet(bet);
+    let saved;
+    try { saved = await account.addBet(bet); }
+    catch (err) {
+      // Database not yet updated for units: save the dollar stake alone.
+      if (!/unit_size/.test(err.message)) throw err;
+      const { unit_size, ...rest } = bet;
+      saved = await account.addBet(rest);
+    }
     noteNewBet(saved);
-    try { localStorage.setItem("lastStake", String(stake)); } catch { /* storage unavailable */ }
-    form.innerHTML = `<p>Tracked: ${esc(row.querySelector(".line-label").textContent)}, $${esc(stake)} at
+    try { localStorage.setItem("lastUnits", String(units)); } catch { /* storage unavailable */ }
+    form.innerHTML = `<p>Tracked: ${esc(row.querySelector(".line-label").textContent)}, ${esc(unitsText(units))} ($${esc(stake)}) at
       ${odds.american > 0 ? "+" : "−"}${Math.abs(odds.american)}. See the <button type="button" class="link-btn" data-goto="bets">Bets tab</button>.</p>`;
   } catch (err) {
     msg.textContent = err.message;
@@ -849,11 +896,27 @@ els.sheetBody.addEventListener("input", (e) => {
   if (!input || !g) return;
   const row = input.closest("[data-line]");
   saveBook(String(g.id), { [row.dataset.line]: input.value.trim() });
-  const ev = evCell(Number(row.dataset.pwin), Number(row.dataset.plose), input.value.trim());
+  // This row and the other side of its line (whose market chance depends on this price).
+  updateLineRow(row);
+  const other = otherKey(row.dataset.line);
+  const partner = other && els.sheetBody.querySelector(`[data-line="${CSS.escape(other)}"]`);
+  if (partner) updateLineRow(partner);
+});
+
+function updateLineRow(row) {
+  const other = otherKey(row.dataset.line);
+  const partner = other && els.sheetBody.querySelector(`[data-line="${CSS.escape(other)}"]`);
+  const ev = evCell(Number(row.dataset.pwin), Number(row.dataset.plose), row.querySelector(".line-book").value.trim(),
+    partner ? partner.querySelector(".line-book").value.trim() : "");
   const cell = row.querySelector(".line-ev");
-  cell.textContent = ev.text;
+  cell.innerHTML = `${esc(ev.text)}<small class="line-stake">${esc(ev.stake)}</small>`;
   cell.className = `line-ev ${ev.cls}`;
   row.classList.toggle("has-value", ev.cls === "pos");
+}
+
+// New sizing settings (Bets tab): redo the suggested stakes.
+window.addEventListener("hockeysim:sizing", () => {
+  els.sheetBody.querySelectorAll("[data-lines] .line-row[data-line]").forEach(updateLineRow);
 });
 
 function afterPickChange(g) {

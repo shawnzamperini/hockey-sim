@@ -71,3 +71,69 @@ export function defaultTotal(dist) {
   }
   return best;
 }
+
+// ------------------------------------------------------------------ bet sizing
+
+/**
+ * Default sizing settings. Everything is in units: the bankroll is
+ * `bankrollUnits` units (100 = the usual convention that one unit is 1% of
+ * the bankroll), and `unitSize` is a unit in dollars (for display only).
+ */
+export const SIZING_DEFAULTS = Object.freeze({
+  unitSize: 10,          // dollars per unit
+  kellyFraction: 0.25,   // quarter Kelly
+  modelWeight: 0.5,      // how far to trust the model vs the market (0..1)
+  maxUnits: 3,           // cap per bet
+  bankrollUnits: 100,    // bankroll in units (1 unit = 1% of it)
+});
+
+/**
+ * Kelly fraction of the bankroll for one bet: win `profit` per 1 staked with
+ * pWin, lose the stake with pLose, otherwise a push (stake back). Maximizes
+ * the expected log of the bankroll: f* = (b·p − q) / (b·(p + q)), which is
+ * edge / b without pushes. 0 when there's no edge.
+ */
+export function kellyFraction(pWin, pLose, profit) {
+  if (!(profit > 0) || !(pWin + pLose > 0)) return 0;
+  const f = (profit * pWin - pLose) / (profit * (pWin + pLose));
+  return f > 0 ? f : 0;
+}
+
+/**
+ * The market's probability that this side wins (ignoring pushes), from the
+ * book's prices. With the other side's price, the bookmaker's margin is
+ * removed exactly (proportionally); without it, a typical two-way margin
+ * (4.5%) is assumed.
+ */
+export function marketProb(profit, otherProfit = null) {
+  const mine = 1 / (1 + profit);
+  if (otherProfit > 0) return mine / (mine + 1 / (1 + otherProfit));
+  return Math.min(0.999, mine / 1.045);
+}
+
+/**
+ * Suggested stake in units for one side of a line.
+ * @param pWin,pLose  the model's chances (the rest is a push)
+ * @param profit      the book's payout per 1 staked
+ * @param otherProfit the other side's payout, if entered (for the market's chance)
+ * @param s           sizing settings (SIZING_DEFAULTS)
+ * @returns { units, kelly, pAdj, edge } — units 0 means don't bet. pAdj is
+ *   the win chance after blending the model with the market by modelWeight,
+ *   edge the expected profit per 1 staked at that chance, kelly the full
+ *   Kelly fraction of the bankroll.
+ */
+export function suggestStake(pWin, pLose, profit, otherProfit, s = SIZING_DEFAULTS) {
+  const settled = pWin + pLose;
+  if (!(settled > 0) || !(profit > 0)) return { units: 0, kelly: 0, pAdj: pWin, edge: 0 };
+  const w = Math.min(1, Math.max(0, s.modelWeight));
+  const pModel = pWin / settled;                          // chance of winning when it settles
+  const pAdj = w * pModel + (1 - w) * marketProb(profit, otherProfit);
+  const win = pAdj * settled, lose = settled - win;
+  const kelly = kellyFraction(win, lose, profit);
+  const raw = s.kellyFraction * kelly * s.bankrollUnits;
+  const units = Math.min(s.maxUnits, Math.round(raw * 10) / 10);   // to 0.1 units
+  return { units: units >= 0.1 ? units : 0, kelly, pAdj, edge: expectedValue(win, lose, profit) };
+}
+
+/** Format units: "1.5u". */
+export const unitsText = (u) => `${Number(u.toFixed(2))}u`;

@@ -93,3 +93,15 @@ export function describeBet(b) {
   return `${team} moneyline`;
 }
 const fmtLine = (x) => (Number.isInteger(Number(x)) ? String(Number(x)) : Number(x).toFixed(1));
+
+/**
+ * The same bets measured in units: stake and profit divided by the unit size
+ * at the time of each bet (bets saved before units existed use `fallbackUnit`).
+ * betStats() of the result reports everything in units.
+ */
+export function toUnits(bets, fallbackUnit = 1) {
+  return bets.map((b) => {
+    const u = Number(b.unit_size) > 0 ? Number(b.unit_size) : fallbackUnit;
+    return { ...b, stake: Number(b.stake) / u, profit: b.profit == null ? b.profit : Number(b.profit) / u };
+  });
+}

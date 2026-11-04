@@ -9,6 +9,7 @@
 // Bets tab or when tracking a bet.
 
 import { SUPABASE_URL, SUPABASE_KEY } from "./config.js";
+import { SIZING_DEFAULTS } from "./lines.js";
 
 const STORAGE_KEY = "hockeysim-auth";
 let clientPromise = null;
@@ -136,4 +137,49 @@ export async function callModel(body) {
     throw e;
   }
   return data;
+}
+
+// ------------------------------------------------------------------ bet sizing settings
+
+const SIZING_KEY = "sizing";
+const COLUMNS = { unitSize: "unit_size", kellyFraction: "kelly_fraction", modelWeight: "model_weight",
+  maxUnits: "max_units", bankrollUnits: "bankroll_units" };
+
+/** Sizing settings from this device's copy (instant; refreshed by loadSizing). */
+export function cachedSizing() {
+  try { return { ...SIZING_DEFAULTS, ...JSON.parse(localStorage.getItem(SIZING_KEY) || "{}") }; }
+  catch { return { ...SIZING_DEFAULTS }; }
+}
+
+function remember(s) {
+  try { localStorage.setItem(SIZING_KEY, JSON.stringify(s)); } catch { /* storage unavailable */ }
+  window.dispatchEvent(new CustomEvent("hockeysim:sizing", { detail: s }));
+}
+
+/** This user's sizing settings from their account (falls back to the device copy). */
+export async function loadSizing() {
+  const c = await client();
+  const { data: auth } = await c.auth.getSession();
+  const uid = auth.session?.user?.id;
+  if (!uid) return cachedSizing();
+  const { data, error } = await c.from("profiles").select(Object.values(COLUMNS).join(",")).eq("id", uid).maybeSingle();
+  if (error || !data) return cachedSizing();
+  const s = { ...SIZING_DEFAULTS };
+  for (const [k, col] of Object.entries(COLUMNS)) if (Number.isFinite(Number(data[col]))) s[k] = Number(data[col]);
+  remember(s);
+  return s;
+}
+
+/** Save sizing settings to the account (and this device). */
+export async function saveSizing(s) {
+  const c = await client();
+  const { data: auth } = await c.auth.getSession();
+  const uid = auth.session?.user?.id;
+  const row = Object.fromEntries(Object.entries(COLUMNS).map(([k, col]) => [col, s[k]]));
+  remember({ ...SIZING_DEFAULTS, ...s });
+  if (!uid) return;
+  const { error } = await c.from("profiles").update(row).eq("id", uid);
+  if (error) throw new Error(/column|schema/i.test(error.message)
+    ? "Saved on this device; the account doesn't have sizing settings yet (database update pending)."
+    : friendly(error));
 }
