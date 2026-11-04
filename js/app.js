@@ -797,11 +797,6 @@ async function openTrackForm(row) {
     row.querySelector(".line-book").focus();
     return;
   }
-  if (new Date(g.start) <= new Date() || isLive(g) || isFinal(g)) {
-    form.innerHTML = "<p>This game has started; bets can only be tracked before puck drop.</p>";
-    row.after(form);
-    return;
-  }
   form.innerHTML = "<p>Checking sign-in…</p>";
   row.after(form);
   const user = await account.currentUser().catch(() => null);
@@ -822,7 +817,8 @@ async function openTrackForm(row) {
       <span class="track-dollars">${esc(dollarsOf(start, sizing.unitSize))}</span>
       <button type="submit">Save bet</button>
       <span class="track-hint">${ev.units > 0 ? `Suggested: ${esc(unitsText(ev.units))}` : "No stake suggested at this price"} ·
-        1u = ${esc(dollarsOf(1, sizing.unitSize))}</span>
+        1u = ${esc(dollarsOf(1, sizing.unitSize))}${new Date(g.start) <= new Date() || isLive(g) || isFinal(g)
+          ? " · This game has started: the bet will be marked as added after puck drop" : ""}</span>
       <span class="track-msg" role="status"></span>`;
 }
 
@@ -1008,7 +1004,14 @@ function pickDefaultDate(days) {
   return dates.find((d) => d >= today) ?? dates[dates.length - 1];
 }
 
+async function loadBenchmark() {
+  // The market benchmark's trust in the model, for "Benchmarked" bet sizing.
+  const doc = await fetchJSON(`${DATA_BASE}/benchmark.json`);
+  if (doc) account.setBenchmarkTrust(Number(doc.trust));
+}
+
 async function load() {
+  loadBenchmark();
   try {
     const resp = await fetch(DATA_URL, { cache: "no-cache" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

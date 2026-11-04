@@ -2,7 +2,7 @@
 
 import * as account from "./account.js";
 import { betStats, describeBet, toUnits } from "./bets.js";
-import { SIZING_DEFAULTS, unitsText } from "./lines.js";
+import { SIZING_DEFAULTS, unitsText, effectiveTrust } from "./lines.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -88,19 +88,23 @@ function chartHTML(series, fmt = units) {
 }
 
 function betRow(b) {
-  const when = `${day(b.start_time)} · ${esc(b.away)} at ${esc(b.home)}`;
+  const late = b.created_at && b.start_time && new Date(b.created_at) > new Date(b.start_time);
+  const when = `${day(b.start_time)} · ${esc(b.away)} at ${esc(b.home)}${late ? ` · <span class="late-tag">added after start</span>` : ""}`;
   const model = Number.isFinite(Number(b.ev)) ? `model ${pctText(Number(b.ev))}` : "";
   let right;
   if (b.status === "open") {
     right = `<span class="bet-stake">${units(b.stake / unitOf(b), false)}</span>
-      <small>${money(b.stake, false)}</small>
-      <button type="button" class="link-btn" data-act="delete" data-id="${esc(b.id)}">Remove</button>`;
+      <small>${money(b.stake, false)}</small>`;
   } else {
     const label = { won: "Won", lost: "Lost", push: "Push", void: "Void" }[b.status];
     const score = b.final_home != null ? `${b.final_away}–${b.final_home}${b.ended_in && b.ended_in !== "REG" ? ` ${b.ended_in}` : ""}` : "";
     right = `<span class="bet-profit ${b.status}">${b.status === "void" ? "0u" : units(b.profit / unitOf(b))}</span>
       <small>${label}${score ? ` · ${esc(score)}` : ""} · ${b.status === "void" ? "$0" : money(b.profit)}</small>`;
   }
+  right += ui.confirmDelete === b.id
+    ? `<span class="confirm-delete">Delete this bet? <button type="button" class="link-btn danger" data-act="delete" data-id="${esc(b.id)}">Delete</button>
+        <button type="button" class="link-btn" data-act="keep">Keep</button></span>`
+    : `<button type="button" class="link-btn" data-act="ask-delete" data-id="${esc(b.id)}">Delete</button>`;
   return `<li class="bet">
       <span class="bet-main">${esc(describeBet(b))} <span class="bet-odds">${oddsText(b.odds_american)}</span>
         <small>${when}${model ? ` · ${model}` : ""}</small></span>
@@ -109,7 +113,7 @@ function betRow(b) {
 }
 
 const KELLY_CHOICES = [[0.125, "⅛ Kelly"], [0.25, "¼ Kelly (recommended)"], [0.5, "½ Kelly"], [1, "Full Kelly"]];
-const WEIGHT_CHOICES = [[0, "0% (market only: no bets)"], [0.25, "25%"], [0.5, "50% (recommended until tested)"], [0.75, "75%"], [1, "100% (model only)"]];
+const WEIGHT_CHOICES = [[0, "0% (market only: no bets)"], [0.1, "10%"], [0.25, "25%"], [0.5, "50%"], [0.75, "75%"], [1, "100% (model only)"]];
 const kellyName = (k) => (KELLY_CHOICES.find(([v]) => v === k)?.[1] || `${k}× Kelly`).replace(/ \(.*\)/, "");
 
 function sizingHTML() {
@@ -117,7 +121,7 @@ function sizingHTML() {
   const opt = (choices, cur) => choices.map(([v, t]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
   return `<details class="sizing" ${ui.sizingOpen ? "open" : ""}>
       <summary><span class="sizing-title">Bet sizing</span>
-        <span class="sizing-sum">1u = ${money(z.unitSize, false)} · ${esc(kellyName(z.kellyFraction))} · model ${Math.round(100 * z.modelWeight)}%</span></summary>
+        <span class="sizing-sum">1u = ${money(z.unitSize, false)} · ${esc(kellyName(z.kellyFraction))} · model ${Math.round(100 * effectiveTrust(z))}%</span></summary>
       <form class="sizing-form" data-form="sizing">
         <p class="explain">Suggested stakes, in units, appear under each line's value in the sportsbook comparison. They use
           the Kelly criterion: bet your edge divided by the odds, as a share of your bankroll, which grows a bankroll
@@ -127,9 +131,11 @@ function sizingHTML() {
         <label>Bankroll (units) <input name="bankrollUnits" type="text" inputmode="decimal" value="${esc(z.bankrollUnits)}">
           <small>100 means one unit is 1% of your bankroll, the usual convention.</small></label>
         <label>Kelly fraction <select name="kellyFraction">${opt(KELLY_CHOICES, z.kellyFraction)}</select></label>
-        <label>Trust in the model <select name="modelWeight">${opt(WEIGHT_CHOICES, z.modelWeight)}</select>
-          <small>Each chance is blended with the market's (from the prices you enter) before sizing. Until the model is
-            benchmarked against past odds, half and half is a sensible hedge.</small></label>
+        <label>Trust in the model <select name="modelWeight">
+            <option value="" ${Number.isFinite(z.modelWeight) ? "" : "selected"}>Benchmarked: ${Math.round(100 * (z.benchmarkTrust ?? 0.5))}% (recommended)</option>
+            ${opt(WEIGHT_CHOICES, z.modelWeight)}</select>
+          <small>Each chance is blended with the market's (from the prices you enter) before sizing. "Benchmarked" uses the
+            weight that best predicted results when the model and the betting market were compared over past seasons.</small></label>
         <label>Most per bet (units) <input name="maxUnits" type="text" inputmode="decimal" value="${esc(z.maxUnits)}"></label>
         <button type="submit" ${ui.busy ? "disabled" : ""}>Save</button>
         ${ui.sizingNote ? `<p class="form-note" role="status">${esc(ui.sizingNote)}</p>` : ""}
@@ -171,8 +177,9 @@ function dashboardHTML() {
       edges are real, your profit should track it; it takes hundreds of bets before luck stops dominating.</p>
     ${open.length ? `<h3 class="res-heading">Open</h3><ol class="bets">${open.map(betRow).join("")}</ol>` : ""}
     ${done.length ? `<h3 class="res-heading">Settled</h3><ol class="bets">${done.slice(0, 100).map(betRow).join("")}</ol>` : ""}
-    <p class="explain">Bets settle automatically within an hour of the final horn. Puck lines and totals count a shootout
-      winner as a goal, as sportsbooks do.</p>`;
+    <p class="explain">Bets settle automatically within an hour of the final horn (bets added after a game ends settle on
+      the next hourly run). Puck lines and totals count a shootout winner as a goal, as sportsbooks do. Deleting a bet
+      removes it from your record and totals for good.</p>`;
 }
 
 function render() {
@@ -223,9 +230,10 @@ export function initBets(el) {
           return v;
         };
         const next = { unitSize: num("unitSize", 0.01, 100000), bankrollUnits: num("bankrollUnits", 1, 100000),
-          kellyFraction: Number(form.kellyFraction.value), modelWeight: Number(form.modelWeight.value),
+          kellyFraction: Number(form.kellyFraction.value),
+          modelWeight: form.modelWeight.value === "" ? null : Number(form.modelWeight.value),
           maxUnits: num("maxUnits", 0.1, 100) };
-        ui.sizing = next;
+        ui.sizing = { ...ui.sizing, ...next };
         ui.sizingOpen = true;
         ui.sizingNote = "";
         try { await account.saveSizing(next); ui.sizingNote = "Saved."; }
@@ -262,7 +270,10 @@ export function initBets(el) {
       window.dispatchEvent(new CustomEvent("hockeysim:auth"));
       render();
     }
+    if (btn.dataset.act === "ask-delete") { ui.confirmDelete = btn.dataset.id; render(); return; }
+    if (btn.dataset.act === "keep") { ui.confirmDelete = null; render(); return; }
     if (btn.dataset.act === "delete") {
+      ui.confirmDelete = null;
       btn.disabled = true;
       try { await account.deleteBet(btn.dataset.id); ui.bets = ui.bets.filter((b) => b.id !== btn.dataset.id); }
       catch (err) { ui.msg = err.message; }

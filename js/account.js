@@ -107,13 +107,13 @@ export async function addBet(row) {
   const c = await client();
   const { data, error } = await c.from("bets").insert(row).select().single();
   if (error) {
-    if (/row-level security/i.test(error.message)) throw new Error("Bets can only be saved before the game starts.");
+    if (/row-level security/i.test(error.message)) throw new Error("The server refused this bet. Try signing out and in again.");
     throw new Error(friendly(error));
   }
   return data;
 }
 
-/** Delete an open bet. */
+/** Delete one of your bets (open or settled). */
 export async function deleteBet(id) {
   const c = await client();
   const { error } = await c.from("bets").delete().eq("id", id);
@@ -145,6 +145,13 @@ const SIZING_KEY = "sizing";
 const COLUMNS = { unitSize: "unit_size", kellyFraction: "kelly_fraction", modelWeight: "model_weight",
   maxUnits: "max_units", bankrollUnits: "bankroll_units" };
 
+/** Record the market benchmark's trust (from public data) for "Benchmarked" sizing. */
+export function setBenchmarkTrust(w) {
+  if (!Number.isFinite(w)) return;
+  const s = cachedSizing();
+  if (s.benchmarkTrust !== w) remember({ ...s, benchmarkTrust: w });
+}
+
 /** Sizing settings from this device's copy (instant; refreshed by loadSizing). */
 export function cachedSizing() {
   try { return { ...SIZING_DEFAULTS, ...JSON.parse(localStorage.getItem(SIZING_KEY) || "{}") }; }
@@ -165,7 +172,11 @@ export async function loadSizing() {
   const { data, error } = await c.from("profiles").select(Object.values(COLUMNS).join(",")).eq("id", uid).maybeSingle();
   if (error || !data) return cachedSizing();
   const s = { ...SIZING_DEFAULTS };
-  for (const [k, col] of Object.entries(COLUMNS)) if (Number.isFinite(Number(data[col]))) s[k] = Number(data[col]);
+  for (const [k, col] of Object.entries(COLUMNS)) {
+    if (data[col] === null && k === "modelWeight") s[k] = null;
+    else if (data[col] !== null && Number.isFinite(Number(data[col]))) s[k] = Number(data[col]);
+  }
+  s.benchmarkTrust = cachedSizing().benchmarkTrust;
   remember(s);
   return s;
 }
@@ -175,8 +186,8 @@ export async function saveSizing(s) {
   const c = await client();
   const { data: auth } = await c.auth.getSession();
   const uid = auth.session?.user?.id;
-  const row = Object.fromEntries(Object.entries(COLUMNS).map(([k, col]) => [col, s[k]]));
-  remember({ ...SIZING_DEFAULTS, ...s });
+  const row = Object.fromEntries(Object.entries(COLUMNS).map(([k, col]) => [col, s[k] ?? null]));
+  remember({ ...cachedSizing(), ...s });
   if (!uid) return;
   const { error } = await c.from("profiles").update(row).eq("id", uid);
   if (error) throw new Error(/column|schema/i.test(error.message)

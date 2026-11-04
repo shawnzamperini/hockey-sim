@@ -82,7 +82,8 @@ export function defaultTotal(dist) {
 export const SIZING_DEFAULTS = Object.freeze({
   unitSize: 10,          // dollars per unit
   kellyFraction: 0.25,   // quarter Kelly
-  modelWeight: 0.5,      // how far to trust the model vs the market (0..1)
+  modelWeight: null,     // trust in the model vs the market (0..1); null = the benchmarked value
+  benchmarkTrust: 0.5,   // the market benchmark's fitted trust (filled in from public data)
   maxUnits: 3,           // cap per bet
   bankrollUnits: 100,    // bankroll in units (1 unit = 1% of it)
 });
@@ -125,7 +126,7 @@ export function marketProb(profit, otherProfit = null) {
 export function suggestStake(pWin, pLose, profit, otherProfit, s = SIZING_DEFAULTS) {
   const settled = pWin + pLose;
   if (!(settled > 0) || !(profit > 0)) return { units: 0, kelly: 0, pAdj: pWin, edge: 0 };
-  const w = Math.min(1, Math.max(0, s.modelWeight));
+  const w = Math.min(1, Math.max(0, effectiveTrust(s)));
   const pModel = pWin / settled;                          // chance of winning when it settles
   const pAdj = w * pModel + (1 - w) * marketProb(profit, otherProfit);
   const win = pAdj * settled, lose = settled - win;
@@ -134,6 +135,10 @@ export function suggestStake(pWin, pLose, profit, otherProfit, s = SIZING_DEFAUL
   const units = Math.min(s.maxUnits, Math.round(raw * 10) / 10);   // to 0.1 units
   return { units: units >= 0.1 ? units : 0, kelly, pAdj, edge: expectedValue(win, lose, profit) };
 }
+
+/** The trust in the model actually used: the user's choice, or the benchmarked value. */
+export const effectiveTrust = (s) => (Number.isFinite(s?.modelWeight) ? s.modelWeight
+  : Number.isFinite(s?.benchmarkTrust) ? s.benchmarkTrust : 0.5);
 
 /** Format units: "1.5u". */
 export const unitsText = (u) => `${Number(u.toFixed(2))}u`;

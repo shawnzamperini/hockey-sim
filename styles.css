@@ -849,3 +849,7 @@ body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
 }
 .sizing-form .explain { margin: 0; }
 .bet-right .link-btn { display: block; margin-left: auto; font-size: 13px; }
+.late-tag { color: var(--red-line); }
+.confirm-delete { display: block; margin-top: 4px; font-size: 13px; color: var(--muted); }
+.confirm-delete .link-btn { display: inline; margin-left: 8px; }
+.link-btn.danger { color: var(--red-line); font-weight: 600; }
